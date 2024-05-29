@@ -1,0 +1,7 @@
+{
+    "files": [
+        "main.pyw",
+        "data/classes.py",
+        "data/mainwindow.ui"
+    ]
+}
