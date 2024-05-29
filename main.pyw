@@ -14,6 +14,7 @@ from nidaqmx.constants import AcquisitionType,TerminalConfiguration
 import scipy
 import time
 class MainWindow(QtWidgets.QMainWindow):
+    progressChanged = QtCore.pyqtSignal(int)
     def __init__(self):
         super(MainWindow, self).__init__()
         self.setWindowTitle("CollaGui")
@@ -31,7 +32,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.wait = QtCore.QTimer(self)
         self.wait.setSingleShot(1)
         self.wait.timeout.connect(self.instr)
-        self.t0=QtCore.QTime.currentTime()
+        self.t0=QtCore.QDateTime.currentDateTime()
         self.time,self.ft, self.ph = [],[],[]
         self.ftcurve = self.Plotter.plot(self.time,self.ft,name="Pm",pen=pg.mkPen(color=(0, 100, 255)))
         self.phcurve = self.Plotter.plot(self.time,self.ph,name="Ph",pen=pg.mkPen(color=(255, 0, 150)))
@@ -50,7 +51,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.pushButton.toggled.connect(self.record)
         self.checkBox.toggled.connect(self.open_valve)
         self.pushButton_19.toggled.connect(self.connect)
-        self.connect()
         self.ch = self.comboBox.currentIndex()
         self.comboBox.currentIndexChanged.connect(self.change_ch)
         self.radioButton.setChecked(1)
@@ -70,6 +70,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.cur_wait = 0
         self.spinBox.valueChanged.connect(self.minvoltage)
         self.timers=[0]
+        self.connect()
+        self.progressChanged.connect(self.progressBar.setValue)
         with open("data/lastfold.txt","r") as f:
             self.dirname = f.readlines()
         with open("data/lastcom.txt","r") as f:
@@ -180,10 +182,19 @@ class MainWindow(QtWidgets.QMainWindow):
         fgt_set_pressure(self.ch,0)
         self.ch = self.comboBox.currentIndex()
     def cleardata(self):
-        self.t0=QtCore.QDateTime.currentTime()
         self.time,self.ft,self.ph = [],[],[]
+        self.timers = [0]
+        self.Plotter.clear()
         self.Plotter_2.clear()
-        self.task.stop()
+        self.task.close()
+        self.ftcurve = self.Plotter.plot(self.time,self.ft,name="Pm",pen=pg.mkPen(color=(0, 100, 255)))
+        self.phcurve = self.Plotter.plot(self.time,self.ph,name="Ph",pen=pg.mkPen(color=(255, 0, 150)))
+        self.task = nidaqmx.Task()
+        self.task.ai_channels.add_ai_voltage_chan('Dev1/ai0',min_val=self.spinBox_2.value()/1000, max_val=self.spinBox.value()/1000)
+        self.task.ai_channels.add_ai_voltage_chan('Dev1/ai1',min_val=self.spinBox_2.value()/1000, max_val=self.spinBox.value()/1000)
+        self.task.timing.cfg_samp_clk_timing(1000*self.spinBox_3.value(), sample_mode=AcquisitionType.CONTINUOUS)
+        self.task.register_every_n_samples_acquired_into_buffer_event(10000, self.update)
+        self.t0=QtCore.QDateTime.currentDateTime()
         self.task.start()
     def connect(self):
         if self.pushButton_19.isChecked():
@@ -196,13 +207,12 @@ class MainWindow(QtWidgets.QMainWindow):
             else:
                 self.pushButton_19.setChecked(1)
                 self.pushButton_19.setText("Connected")
-                fgt_set_sessionPressureUnit("Pa")
                 self.task = nidaqmx.Task()
                 self.task.ai_channels.add_ai_voltage_chan('Dev1/ai0',min_val=self.spinBox_2.value()/1000, max_val=self.spinBox.value()/1000)
                 self.task.ai_channels.add_ai_voltage_chan('Dev1/ai1',min_val=self.spinBox_2.value()/1000, max_val=self.spinBox.value()/1000)
                 self.task.timing.cfg_samp_clk_timing(1000*self.spinBox_3.value(), sample_mode=AcquisitionType.CONTINUOUS)
-                self.task.register_every_n_samples_acquired_into_buffer_event(int(1000*self.spinBox_3.value()/self.refresh), self.update)
-                self.t0=QtCore.QTime.currentTime()
+                self.task.register_every_n_samples_acquired_into_buffer_event(10000, self.update)
+                self.t0=QtCore.QDateTime.currentDateTime()
                 self.task.start()
         else:
             fgt_close()
@@ -216,13 +226,13 @@ class MainWindow(QtWidgets.QMainWindow):
         fgt_set_pressure(self.ch,self.doubleSpinBox_2.value())
     def open_valve(self):
         if self.checkBox.isChecked():
-            with nidaqmx.Task() as task:
-                task.ao_channels.add_ao_voltage_chan("Dev1/ao0")
-                task.write(5, auto_start=True)
+            self.task_valve = nidaqmx.Task()
+            self.task_valve.ao_channels.add_ao_voltage_chan("Dev1/ao0")
+            self.task_valve.write(5)
+            self.task_valve.start()
         else:
-            with nidaqmx.Task() as task:
-                task.ao_channels.add_ao_voltage_chan("Dev1/ao0")
-                task.write(0, auto_start=True)
+            self.task_valve.stop()
+            self.task_valve.close()
     def valve(self):
         warn = QtWidgets.QMessageBox()
         warn.setIcon(QtWidgets.QMessageBox.Icon.Information)
@@ -236,7 +246,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.pushButton.setProperty("text","Start")
             self.pushButton.setIcon(QIcon("data/recorder.png"))
             self.recording = 0
-            self.progressBar.setValue(0)
+            self.progressBar.reset()
             for widget in self.liste_instr:
                 widget.setEnabled(1)
             self.curs =0
@@ -250,7 +260,7 @@ class MainWindow(QtWidgets.QMainWindow):
             else:
                 self.recording = 0
                 self.loading.stop()
-                self.progressBar.setValue(0)
+                self.progressBar.reset()
                 self.pushButton.setChecked(0)
     def start(self):
         self.filename = self.dialog.getSaveFileName(directory=self.dirname,filter = "Text files (*.txt)")[0]
@@ -268,6 +278,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.pushButton.setIcon(QIcon("data/record.png"))
             self.curs = 0
             self.loading.start()
+            self.times=[]
+            self.cons =[]
             self.instr()
         else:
             self.pushButton.setChecked(0)
@@ -281,25 +293,25 @@ class MainWindow(QtWidgets.QMainWindow):
         np.savetxt(fnm,np.column_stack((np.array(self.time),np.array(self.ft),np.array(self.ph))),header=header,delimiter = "\t",newline='\n')
     def instr(self):
         if self.curs<len(self.liste_instr):
-            self.times.append(len(self.time))
+            self.times.append(len(self.time)-1)
+            self.cons.append(self.liste_instr[self.curs+2].value()*100)
             if self.curs != 0:
                 self.liste_instr[self.curs-4].setMovie(QMovie())
                 self.liste_instr[self.curs-4].setPixmap(QPixmap("data/done.png").scaled(20,20))
                 self.disp()
-            self.cons.append(self.liste_instr[self.curs+2].value()*100)
             self.last = self.liste_instr[self.curs+2].value()*100
             self.recording = 1
             self.cur_wait = self.liste_instr[self.curs+3].value()*1000
             self.wait.start(self.cur_wait)
-            fgt_set_pressure(self.ch,self.liste_instr[self.curs+2].value()*100)
+            fgt_set_pressure(self.ch,self.liste_instr[self.curs+2].value())
             self.liste_instr[self.curs].setEnabled(1)
             self.liste_instr[self.curs].setMovie(self.loading)
             self.curs += 4
         else:
-            self.times.append(len(self.time))
+            self.times.append(len(self.time)-1)
             self.disp()
             self.recording = 0
-            self.progressBar.setValue(0)
+            self.progressBar.reset()
             self.liste_instr[self.curs-4].setMovie(QMovie())
             self.liste_instr[self.curs-4].setPixmap(QPixmap("data/done.png").scaled(20,20))
             self.loading.stop()
@@ -345,18 +357,18 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.filename3 != "":
             self.save(self.filename3)
     def update(self,task_handle, every_n_samples_event_type, number_of_samples, callback_data):
-        self.timers.append(-QtCore.QTime.currentTime().msecsTo(self.t0)/1000)
+        self.timers.append(-QtCore.QDateTime.currentDateTime().msecsTo(self.t0)/1000)
         data = np.array(self.task.read(number_of_samples_per_channel=number_of_samples))
-        n = int(self.spinBox_3.value()*self.spinBox_4.value())
-        points = int(len(data[0])/n)
-        self.ft = np.concatenate((self.ft,np.nanmean(data[0].reshape(n,-1),axis=0)))
-        self.ph = np.concatenate((self.ph,np.nanmean(data[1].reshape(n,-1),axis=0)))
-        time = np.linspace(self.timers[-2],self.timers[-1],points)
+        n = int((5000/self.spinBox_3.value())/self.spinBox_4.value())
+        self.ft = np.concatenate((self.ft,np.nanmean(data[0].reshape(n,-1),axis=1)))
+        self.ph = np.concatenate((self.ph,np.nanmean(data[1].reshape(n,-1),axis=1)))
+        time = np.linspace(self.timers[-2],self.timers[-1],n)
         self.time = np.concatenate((self.time,time))
         self.ftcurve.setData(self.time,self.ft)
         self.phcurve.setData(self.time,self.ph)
         if self.recording:
-            self.progressBar.setValue(int(((-QtCore.QTime.currentTime().msecsTo(self.t0)-self.time[self.times[-1]]*1000)/(self.cur_wait))*100))
+            percentage = int(((self.time[-1]-self.time[self.times[-1]])/(self.cur_wait))*100000)
+            self.progressChanged.emit(percentage)
         return 0
     def addInstr(self):
         self.liste_instr.append(QtWidgets.QLabel())
@@ -408,7 +420,13 @@ class MainWindow(QtWidgets.QMainWindow):
             self.liste_instr[i].clear()
     def disp(self):
         col = (np.random.randint(200,size=3))
-        if (len(self.cons)==1 and not(self.checkBox_2.isChecked())) or (self.cons[-1]-self.cons[-2]>0 and not(self.checkBox_2.isChecked())) or (self.cons[-1]-self.cons[-2]<0 and self.checkBox_2.isChecked()):
+        if len(self.cons)<2:
+            if not(self.checkBox_2.isChecked()):
+                pens = pg.mkPen(color=col,width = 2)
+            else:
+                pens = pg.mkPen(color=col,width = 2)
+                pens.setDashPattern([3,8])
+        elif (self.cons[-1]-self.cons[-2]>0 and not(self.checkBox_2.isChecked())) or (self.cons[-1]-self.cons[-2]<0 and self.checkBox_2.isChecked()):
             pens = pg.mkPen(color=col,width = 2)
         else:
             pens = pg.mkPen(color=col,width = 2)
